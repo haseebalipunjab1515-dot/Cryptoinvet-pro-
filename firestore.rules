@@ -1,0 +1,152 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {uid}
+    // Fields:
+    //   - uid: string (required)
+    //   - email: string (required, email format)
+    //   - balance: number (required, >= 0)
+    //   - totalInvested: number (optional)
+    //   - totalProfit: number (optional)
+    //   - createdAt: timestamp (optional)
+    //
+    // Collection: investments
+    // Document ID: {investmentId}
+    // Fields:
+    //   - uid: string (required, matches owner)
+    //   - planId: string (required)
+    //   - amount: number (required, > 0)
+    //   - dailyProfit: number (required)
+    //   - startDate: timestamp (required)
+    //   - endDate: timestamp (required)
+    //   - status: string (required, enum: ["active", "completed"])
+    //
+    // Collection: deposits
+    // Document ID: {depositId}
+    // Fields:
+    //   - uid: string (required, matches owner)
+    //   - amount: number (required, > 0)
+    //   - txHash: string (required)
+    //   - status: string (required, enum: ["pending", "completed", "rejected"])
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: withdrawals
+    // Document ID: {withdrawalId}
+    // Fields:
+    //   - uid: string (required, matches owner)
+    //   - amount: number (required, > 0)
+    //   - address: string (required)
+    //   - status: string (required, enum: ["pending", "completed", "rejected"])
+    //   - createdAt: timestamp (required)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        ((exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', 'user') == 'admin') ||
+          (request.auth.token.email == "haseeb.ali.punjab1515@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return hasOnlyAllowedFields(['uid', 'email', 'username', 'balance', 'totalInvested', 'totalProfit', 'createdAt', 'role', 'referredBy', 'referralCount', 'activeReferralCount', 'totalReferralEarnings', 'claimedTiers']) &&
+             data.uid == request.auth.uid &&
+             isValidEmail(data.email) &&
+             data.email.size() < 100 &&
+             data.balance is number && data.balance >= 0 &&
+             (!('role' in data) || (data.role is string && data.role.size() < 20)) &&
+             (!('username' in data) || (data.username is string && data.username.size() < 50)) &&
+             (!('referredBy' in data) || (data.referredBy is string && data.referredBy.size() < 50)) &&
+             data.referralCount is number &&
+             data.activeReferralCount is number &&
+             data.totalReferralEarnings is number &&
+             (!('claimedTiers' in data) || (data.claimedTiers is list));
+    }
+
+    function isValidInvestment(data) {
+      return hasOnlyAllowedFields(['uid', 'planId', 'amount', 'dailyProfit', 'startDate', 'endDate', 'status', 'lastProfitClaimedAt']) &&
+             data.uid == request.auth.uid &&
+             data.planId is string && data.planId.size() < 50 &&
+             data.amount is number && data.amount > 0 &&
+             data.dailyProfit is number &&
+             data.status in ['active', 'completed'];
+    }
+
+    function isValidDeposit(data) {
+      return hasOnlyAllowedFields(['uid', 'amount', 'txHash', 'status', 'createdAt']) &&
+             data.uid == request.auth.uid &&
+             data.amount is number && data.amount > 0 &&
+             data.txHash is string && data.txHash.size() > 0 &&
+             data.status in ['pending', 'completed', 'rejected'];
+    }
+
+    function isValidWithdrawal(data) {
+      return hasOnlyAllowedFields(['uid', 'amount', 'address', 'status', 'createdAt']) &&
+             data.uid == request.auth.uid &&
+             data.amount is number && data.amount > 0 &&
+             data.address is string && data.address.size() >= 10 && data.address.size() < 100 &&
+             data.status in ['pending', 'completed', 'rejected'];
+    }
+
+    // ===============================================================
+    // Match Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data) && (isAdmin() || !('role' in request.resource.data) || request.resource.data.role == 'user' || (request.auth.token.email == "haseeb.ali.punjab1515@gmail.com" && request.resource.data.role == 'admin'));
+      // Allow users to update their own balance/stats
+      allow update: if isAdmin() || 
+                       (isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.get('role', 'user') == resource.data.get('role', 'user')) ||
+                       (isOwner(userId) && isValidUser(request.resource.data) && request.auth.token.email == "haseeb.ali.punjab1515@gmail.com" && request.resource.data.role == 'admin');
+    }
+
+    match /investments/{investmentId} {
+      allow read: if isOwner(resource.data.uid) || isAdmin();
+      allow create: if isAuthenticated() && isValidInvestment(request.resource.data);
+      allow update: if isAdmin() || (isOwner(resource.data.uid) && isValidInvestment(request.resource.data));
+    }
+
+    match /deposits/{depositId} {
+      allow read: if isOwner(resource.data.uid) || isAdmin();
+      allow create: if isAuthenticated() && isValidDeposit(request.resource.data);
+      allow update: if isAdmin();
+    }
+
+    match /withdrawals/{withdrawalId} {
+      allow read: if isOwner(resource.data.uid) || isAdmin();
+      allow create: if isAuthenticated() && isValidWithdrawal(request.resource.data);
+      allow update: if isAdmin();
+    }
+  }
+}
