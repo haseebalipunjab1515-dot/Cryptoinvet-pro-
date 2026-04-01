@@ -275,11 +275,11 @@ const AdminPanel = ({ profile }: { profile: UserProfile }) => {
         const inv = invDoc.data();
         const lastClaim = inv.lastProfitClaimedAt?.toMillis() || inv.startDate?.toMillis() || now;
         const msElapsed = now - lastClaim;
-        const daysElapsed = msElapsed / (24 * 60 * 60 * 1000);
+        const minutesElapsed = Math.floor(msElapsed / 60000);
 
-        if (daysElapsed >= 0.01) { // Process even small amounts for demo (every ~15 mins)
-          const dailyProfitAmt = (inv.amount * inv.dailyProfit) / 100;
-          const totalNewProfit = dailyProfitAmt * daysElapsed;
+        if (minutesElapsed >= 1) {
+          const perMinuteProfitAmt = (inv.amount * inv.dailyProfit) / (100 * 24 * 60);
+          const totalNewProfit = perMinuteProfitAmt * minutesElapsed;
 
           const userRef = doc(db, 'users', inv.uid);
           const userSnap = await getDoc(userRef);
@@ -288,12 +288,13 @@ const AdminPanel = ({ profile }: { profile: UserProfile }) => {
             const batch = writeBatch(db);
             
             batch.update(userRef, {
-              balance: userData.balance + totalNewProfit,
-              totalProfit: userData.totalProfit + totalNewProfit
+              balance: (userData.balance || 0) + totalNewProfit,
+              totalProfit: (userData.totalProfit || 0) + totalNewProfit
             });
             
+            const newClaimTime = lastClaim + (minutesElapsed * 60000);
             batch.update(doc(db, 'investments', invDoc.id), {
-              lastProfitClaimedAt: serverTimestamp()
+              lastProfitClaimedAt: new Date(newClaimTime)
             });
 
             await batch.commit();
@@ -1683,7 +1684,13 @@ const Dashboard = ({ isOpen, onClose, user, profile, transactions, initialDeposi
             <>
               {/* Stats Grid */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-                <div className="glass-card p-5">
+                <div className="glass-card p-5 relative overflow-hidden group">
+                  <div className="absolute top-0 right-0 p-2">
+                    <div className="flex items-center gap-1.5 px-2 py-0.5 bg-emerald-500/10 rounded-full border border-emerald-500/20">
+                      <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                      <span className="text-[10px] font-bold text-emerald-500 uppercase tracking-wider">Live</span>
+                    </div>
+                  </div>
                   <div className="flex justify-between items-start mb-3">
                     <div className="p-2 bg-emerald-500/10 rounded-lg">
                       <Wallet className="text-emerald-500 w-5 h-5" />
@@ -1703,7 +1710,13 @@ const Dashboard = ({ isOpen, onClose, user, profile, transactions, initialDeposi
                   <h2 className="text-2xl font-mono font-bold">${(profile?.totalInvested || 0).toFixed(2)}</h2>
                 </div>
 
-                <div className="glass-card p-5">
+                <div className="glass-card p-5 relative overflow-hidden group">
+                  <div className="absolute top-0 right-0 p-2">
+                    <div className="flex items-center gap-1.5 px-2 py-0.5 bg-purple-500/10 rounded-full border border-purple-500/20">
+                      <div className="w-1.5 h-1.5 bg-purple-500 rounded-full animate-pulse" />
+                      <span className="text-[10px] font-bold text-purple-500 uppercase tracking-wider">Growing</span>
+                    </div>
+                  </div>
                   <div className="flex justify-between items-start mb-3">
                     <div className="p-2 bg-purple-500/10 rounded-lg">
                       <Zap className="text-purple-500 w-5 h-5" />
@@ -2320,7 +2333,7 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
 
-    // Check for pending deposits every minute
+    // Check for pending deposits every 10 seconds
     const interval = setInterval(async () => {
       const q = query(collection(db, 'deposits'), where('uid', '==', user.uid), where('status', '==', 'pending'));
       const snap = await getDocs(q);
@@ -2328,11 +2341,11 @@ export default function App() {
       snap.docs.forEach(doc => {
         const tx = { ...doc.data(), id: doc.id } as Transaction;
         const createdAt = tx.createdAt?.toMillis() || 0;
-        if (now - createdAt > 60000) { // 1 minute
+        if (now - createdAt > 5000) { // 5 seconds
           autoApproveDeposit(tx);
         }
       });
-    }, 60000);
+    }, 10000);
 
     return () => clearInterval(interval);
   }, [user]);
@@ -2442,14 +2455,19 @@ export default function App() {
         const inv = invDoc.data();
         const lastClaim = inv.lastProfitClaimedAt?.toMillis() || inv.startDate?.toMillis() || now;
         const msElapsed = now - lastClaim;
-        const daysElapsed = Math.floor(msElapsed / (24 * 60 * 60 * 1000));
+        
+        // Process profit every minute (granular growth)
+        const minutesElapsed = Math.floor(msElapsed / 60000);
 
-        if (daysElapsed >= 1) {
-          const dailyProfitAmt = (inv.amount * inv.dailyProfit) / 100;
-          const profitToAdd = dailyProfitAmt * daysElapsed;
+        if (minutesElapsed >= 1) {
+          // dailyProfit is percentage, e.g., 5%
+          // dailyProfitAmt = (amount * dailyProfit) / 100
+          // perMinuteProfitAmt = dailyProfitAmt / (24 * 60)
+          const perMinuteProfitAmt = (inv.amount * inv.dailyProfit) / (100 * 24 * 60);
+          const profitToAdd = perMinuteProfitAmt * minutesElapsed;
           totalNewProfit += profitToAdd;
           
-          const newClaimTime = lastClaim + (daysElapsed * 24 * 60 * 60 * 1000);
+          const newClaimTime = lastClaim + (minutesElapsed * 60000);
           const endDate = inv.endDate?.toMillis() || (inv.startDate?.toMillis() + 30 * 24 * 60 * 60 * 1000);
           const isCompleted = newClaimTime >= endDate;
 
@@ -2467,11 +2485,10 @@ export default function App() {
           totalProfit: (userData.totalProfit || 0) + totalNewProfit
         });
         await batch.commit();
-        console.log(`Processed $${totalNewProfit} profit for user ${uid}`);
+        console.log(`Processed $${totalNewProfit.toFixed(4)} profit for user ${uid}`);
       }
     } catch (error) {
       console.error('Error processing user profits:', error);
-      // Don't throw handleFirestoreError here as it runs in background and would spam the UI
     }
   };
 
